@@ -1,0 +1,83 @@
+{
+  "title": "BLE Scale",
+  "config": {
+    "step": {
+      "user": {
+        "title": "Select a BLE scale",
+        "description": "Wake the scale before continuing.",
+        "data": {
+          "address": "Scale"
+        }
+      },
+      "protocol": {
+        "title": "Select the scale protocol",
+        "description": "The device name was not recognized. Select its protocol manually.",
+        "data": {
+          "adapter": "Scale protocol"
+        }
+      },
+      "bluetooth_confirm": {
+        "title": "Set up {name}",
+        "description": "Do you want to configure this discovered BLE scale?"
+      },
+      "profile": {
+        "title": "User profile",
+        "description": "These values are stored locally and used for scale setup and body-composition estimates.",
+        "data": {
+          "height": "Height (cm)",
+          "age": "Age",
+          "gender": "Sex",
+          "athlete": "Athlete mode"
+        }
+      }
+    },
+    "error": {
+      "device_not_found": "The scale is not currently visible. Wake it and try again.",
+      "unsupported_device": "The selected device does not match a supported scale protocol."
+    },
+    "abort": {
+      "already_configured": "This scale is already configured.",
+      "not_connectable": "This scale was seen only through a non-connectable Bluetooth scanner.",
+      "no_devices_found": "No unconfigured connectable Bluetooth devices are visible. Wake the scale and try again.",
+      "unsupported_device": "The discovered device does not match a supported scale protocol."
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "User profile",
+        "description": "Update the profile used for scale setup and body-composition estimates.",
+        "data": {
+          "height": "Height (cm)",
+          "age": "Age",
+          "gender": "Sex",
+          "athlete": "Athlete mode"
+        }
+      }
+    }
+  },
+  "selector": {
+    "gender": {
+      "options": {
+        "male": "Male",
+        "female": "Female"
+      }
+    }
+  },
+  "entity": {
+    "sensor": {
+      "weight": {"name": "Weight"},
+      "bmi": {"name": "BMI"},
+      "body_fat_percent": {"name": "Body fat"},
+      "water_percent": {"name": "Water"},
+      "muscle_mass": {"name": "Muscle mass"},
+      "bone_mass": {"name": "Bone mass"},
+      "visceral_fat": {"name": "Visceral fat"},
+      "physique_rating": {"name": "Physique rating"},
+      "bmr": {"name": "Basal metabolic rate"},
+      "metabolic_age": {"name": "Metabolic age"},
+      "impedance": {"name": "Impedance"},
+      "last_measurement": {"name": "Last measurement"}
+    }
+  }
+}
