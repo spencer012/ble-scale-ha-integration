@@ -85,7 +85,9 @@ class BleScaleCoordinator(DataUpdateCoordinator[ScaleMeasurement]):
         )
         self._cancel_bluetooth_callback: Any = None
         self._connect_task: asyncio.Task[None] | None = None
+        self._clear_history_handle: asyncio.TimerHandle | None = None
         self._cooldown_until = 0.0
+        self._shutting_down = False
         self._stale_connections_closed = False
 
     async def async_start(self) -> None:
@@ -93,16 +95,20 @@ class BleScaleCoordinator(DataUpdateCoordinator[ScaleMeasurement]):
         self._cancel_bluetooth_callback = bluetooth.async_register_callback(
             self.hass,
             self._async_advertisement,
-            {"address": self.address, "connectable": True},
+            {"address": self.address, "connectable": False},
             BluetoothScanningMode.PASSIVE,
             replay=BluetoothCallbackReplay.DISABLED,
         )
 
     async def async_shutdown(self) -> None:
         """Stop advertisement listening and any active GATT session."""
+        self._shutting_down = True
         if self._cancel_bluetooth_callback is not None:
             self._cancel_bluetooth_callback()
             self._cancel_bluetooth_callback = None
+        if self._clear_history_handle is not None:
+            self._clear_history_handle.cancel()
+            self._clear_history_handle = None
         if self._connect_task is not None:
             self._connect_task.cancel()
             with suppress(asyncio.CancelledError):
@@ -131,6 +137,10 @@ class BleScaleCoordinator(DataUpdateCoordinator[ScaleMeasurement]):
         hold_handle: asyncio.TimerHandle | None = None
         done = asyncio.Event()
         latest_reading: ScaleReading | None = None
+
+        @callback
+        def disconnected_handler(_client: BleakClientWithServiceCache) -> None:
+            done.set()
 
         @callback
         def notification_handler(_sender: Any, data: bytearray) -> None:
@@ -174,7 +184,8 @@ class BleScaleCoordinator(DataUpdateCoordinator[ScaleMeasurement]):
                     BleakClientWithServiceCache,
                     ble_device,
                     ble_device.name or self.entry.title,
-                    max_attempts=3,
+                    disconnected_callback=disconnected_handler,
+                    max_attempts=2,
                 )
 
             await client.start_notify(
@@ -222,11 +233,24 @@ class BleScaleCoordinator(DataUpdateCoordinator[ScaleMeasurement]):
                 unlock_task.cancel()
                 with suppress(asyncio.CancelledError):
                     await unlock_task
-            if client is not None and client.is_connected:
+            if client is not None:
                 with suppress(*BLEAK_RETRY_EXCEPTIONS):
                     await client.disconnect()
             self._cooldown_until = monotonic() + RECONNECT_COOLDOWN
+            if not self._shutting_down:
+                if self._clear_history_handle is not None:
+                    self._clear_history_handle.cancel()
+                self._clear_history_handle = self.hass.loop.call_later(
+                    RECONNECT_COOLDOWN,
+                    self._async_clear_advertisement_history,
+                )
             self._connect_task = None
+
+    @callback
+    def _async_clear_advertisement_history(self) -> None:
+        """Allow the next identical wake advertisement to trigger a session."""
+        self._clear_history_handle = None
+        bluetooth.async_clear_advertisement_history(self.hass, self.address)
 
     async def _periodic_unlock(
         self, context: _BleakConnectionContext
