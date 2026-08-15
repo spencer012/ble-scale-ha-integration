@@ -2,11 +2,19 @@
 
 from __future__ import annotations
 
+from collections import deque
 from datetime import datetime
+from time import monotonic
 
 from ..body_comp import uuid16, xor_checksum
 from ..models import ScaleReading
 from .base import ConnectionContext, DeviceInfo, ScaleAdapter, uint16_le
+
+_STABILITY_MIN_ELAPSED = 4.0
+_STABILITY_MIN_SAMPLES = 3
+_STABILITY_MIN_SPAN = 1.5
+_STABILITY_TOLERANCE_RAW = 10
+_STABILITY_WINDOW = 2.0
 
 
 class OneByoneAdapter(ScaleAdapter):
@@ -18,10 +26,11 @@ class OneByoneAdapter(ScaleAdapter):
     included_names = ("t9146", "t9147", "t9120", "health scale")
     char_notify_uuid = uuid16(0xFFF4)
     char_write_uuid = uuid16(0xFFF1)
-    completion_hold = 3.0
+    completion_hold = 12.0
 
     def __init__(self) -> None:
-        self._previous_raw_weight: int | None = None
+        self._first_weight_at: float | None = None
+        self._weight_samples: deque[tuple[float, int]] = deque()
         self._weight_stable = False
 
     def matches(self, device: DeviceInfo) -> bool:
@@ -37,7 +46,8 @@ class OneByoneAdapter(ScaleAdapter):
         return notify in chars and inlife_write not in chars
 
     async def on_connected(self, context: ConnectionContext) -> None:
-        self._previous_raw_weight = None
+        self._first_weight_at = None
+        self._weight_samples.clear()
         self._weight_stable = False
 
         unit_command = bytearray(
@@ -72,8 +82,28 @@ class OneByoneAdapter(ScaleAdapter):
             if data[9] != 1 and raw_impedance != 0:
                 impedance = raw_impedance
 
-        self._weight_stable = self._previous_raw_weight == raw_weight
-        self._previous_raw_weight = raw_weight
+        if raw_weight <= 0:
+            self._first_weight_at = None
+            self._weight_samples.clear()
+            self._weight_stable = False
+            return ScaleReading(0.0, impedance)
+
+        now = monotonic()
+        if self._first_weight_at is None:
+            self._first_weight_at = now
+        self._weight_samples.append((now, raw_weight))
+        cutoff = now - _STABILITY_WINDOW
+        while self._weight_samples[0][0] < cutoff:
+            self._weight_samples.popleft()
+
+        sample_weights = [weight for _, weight in self._weight_samples]
+        self._weight_stable = (
+            now - self._first_weight_at >= _STABILITY_MIN_ELAPSED
+            and len(self._weight_samples) >= _STABILITY_MIN_SAMPLES
+            and now - self._weight_samples[0][0] >= _STABILITY_MIN_SPAN
+            and max(sample_weights) - min(sample_weights)
+            <= _STABILITY_TOLERANCE_RAW
+        )
         return ScaleReading(raw_weight / 100, impedance)
 
     def is_final(self, reading: ScaleReading) -> bool:
