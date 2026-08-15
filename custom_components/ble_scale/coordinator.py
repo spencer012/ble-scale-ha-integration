@@ -38,7 +38,7 @@ from .const import (
     RECONNECT_COOLDOWN,
 )
 from .models import ScaleMeasurement, ScaleReading, UserProfile
-from .scales import adapter_for_key
+from .scales import DeviceInfo, adapter_for_key, resolve_adapter
 from .scales.base import ConnectionContext, ScaleAdapter
 
 _LOGGER = logging.getLogger(__name__)
@@ -136,15 +136,24 @@ class BleScaleCoordinator(DataUpdateCoordinator[ScaleMeasurement]):
         unlock_task: asyncio.Task[None] | None = None
         hold_handle: asyncio.TimerHandle | None = None
         done = asyncio.Event()
+        disconnected = False
         latest_reading: ScaleReading | None = None
+        stage = "connection cleanup"
 
         @callback
         def disconnected_handler(_client: BleakClientWithServiceCache) -> None:
+            nonlocal disconnected
+            disconnected = True
             done.set()
 
         @callback
         def notification_handler(_sender: Any, data: bytearray) -> None:
             nonlocal latest_reading, hold_handle
+            _LOGGER.debug(
+                "Notification from BLE scale %s: %s",
+                self.address,
+                bytes(data).hex(" "),
+            )
             try:
                 reading = self.adapter.parse_notification(bytes(data))
             except (IndexError, ValueError):
@@ -169,16 +178,27 @@ class BleScaleCoordinator(DataUpdateCoordinator[ScaleMeasurement]):
                 )
 
         try:
+            _LOGGER.debug(
+                "Starting %s measurement session for %s",
+                self.adapter.name,
+                self.address,
+            )
             if not self._stale_connections_closed:
                 await close_stale_connections_by_address(self.address)
                 self._stale_connections_closed = True
 
+            stage = "connectable route lookup"
             ble_device = bluetooth.async_ble_device_from_address(
                 self.hass, self.address, connectable=True
             )
             if ble_device is None:
+                _LOGGER.warning(
+                    "No connectable Bluetooth route is available for scale %s",
+                    self.address,
+                )
                 return
 
+            stage = "connection"
             async with asyncio.timeout(CONNECT_TIMEOUT):
                 client = await establish_connection(
                     BleakClientWithServiceCache,
@@ -188,10 +208,45 @@ class BleScaleCoordinator(DataUpdateCoordinator[ScaleMeasurement]):
                     max_attempts=2,
                 )
 
+            stage = "protocol detection"
+            resolved_adapter = resolve_adapter(
+                DeviceInfo(
+                    local_name=ble_device.name or self.entry.title,
+                    service_uuids=tuple(
+                        service.uuid for service in client.services
+                    ),
+                    characteristic_uuids=tuple(
+                        characteristic.uuid
+                        for service in client.services
+                        for characteristic in service.characteristics
+                    ),
+                )
+            )
+            if (
+                resolved_adapter is not None
+                and resolved_adapter.key != self.adapter.key
+            ):
+                _LOGGER.warning(
+                    "Correcting scale %s protocol from %s to %s",
+                    self.address,
+                    self.adapter.name,
+                    resolved_adapter.name,
+                )
+                self.adapter = resolved_adapter
+                self.hass.config_entries.async_update_entry(
+                    self.entry,
+                    data={
+                        **self.entry.data,
+                        CONF_ADAPTER: resolved_adapter.key,
+                    },
+                )
+
+            stage = "notification setup"
             await client.start_notify(
                 self.adapter.char_notify_uuid, notification_handler
             )
             context = _BleakConnectionContext(client, self.profile)
+            stage = "scale initialization"
             await self.adapter.on_connected(context)
 
             if self.adapter.unlock_command is not None:
@@ -206,9 +261,15 @@ class BleScaleCoordinator(DataUpdateCoordinator[ScaleMeasurement]):
                         f"BLE Scale unlock {self.address}",
                     )
 
+            stage = "measurement"
             async with asyncio.timeout(MEASUREMENT_TIMEOUT):
                 await done.wait()
             if latest_reading is None:
+                _LOGGER.warning(
+                    "Scale %s %s before sending a supported measurement frame",
+                    self.address,
+                    "disconnected" if disconnected else "stopped responding",
+                )
                 return
 
             measurement = ScaleMeasurement(
@@ -218,14 +279,25 @@ class BleScaleCoordinator(DataUpdateCoordinator[ScaleMeasurement]):
                 measured_at=datetime.now(UTC),
             )
             self.async_set_updated_data(measurement)
-        except TimeoutError:
-            _LOGGER.debug("Timed out reading BLE scale %s", self.address)
-        except BLEAK_RETRY_EXCEPTIONS:
-            _LOGGER.debug(
-                "Bluetooth error reading scale %s",
+            _LOGGER.info(
+                "Received BLE scale measurement from %s: %.2f kg",
                 self.address,
-                exc_info=True,
+                measurement.body.weight,
             )
+        except TimeoutError:
+            _LOGGER.warning(
+                "Timed out during BLE scale %s for %s",
+                stage,
+                self.address,
+            )
+        except BLEAK_RETRY_EXCEPTIONS as err:
+            _LOGGER.warning(
+                "Bluetooth failure during BLE scale %s for %s: %s",
+                stage,
+                self.address,
+                err,
+            )
+            _LOGGER.debug("BLE scale Bluetooth failure details", exc_info=True)
         finally:
             if hold_handle is not None:
                 hold_handle.cancel()

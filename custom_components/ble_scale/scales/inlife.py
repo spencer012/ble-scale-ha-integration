@@ -33,6 +33,8 @@ class InlifeScaleAdapter(ScaleAdapter):
         name = device.local_name.casefold()
         if name in self.exact_names:
             return True
+        if name:
+            return False
         if device.characteristic_uuids:
             chars = {
                 value.casefold().replace("-", "")
