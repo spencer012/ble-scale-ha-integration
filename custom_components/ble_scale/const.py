@@ -10,6 +10,8 @@ CONF_AGE: Final = "age"
 CONF_ATHLETE: Final = "athlete"
 CONF_GENDER: Final = "gender"
 CONF_HEIGHT: Final = "height"
+CONF_HEIGHT_FEET: Final = "height_feet"
+CONF_HEIGHT_INCHES: Final = "height_inches"
 
 DEFAULT_AGE: Final = 30
 DEFAULT_ATHLETE: Final = False

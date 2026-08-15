@@ -19,6 +19,11 @@ from homeassistant.config_entries import (
 )
 from homeassistant.const import CONF_ADDRESS
 from homeassistant.core import callback
+from homeassistant.helpers.selector import (
+    NumberSelector,
+    NumberSelectorConfig,
+    NumberSelectorMode,
+)
 
 from .const import (
     CONF_ADAPTER,
@@ -26,6 +31,8 @@ from .const import (
     CONF_ATHLETE,
     CONF_GENDER,
     CONF_HEIGHT,
+    CONF_HEIGHT_FEET,
+    CONF_HEIGHT_INCHES,
     DEFAULT_AGE,
     DEFAULT_ATHLETE,
     DEFAULT_GENDER,
@@ -33,6 +40,9 @@ from .const import (
     DOMAIN,
 )
 from .scales import ADAPTER_NAMES, DeviceInfo, resolve_adapter
+
+CM_PER_INCH = 2.54
+INCHES_PER_FOOT = 12
 
 
 def _device_info(discovery: BluetoothServiceInfoBleak) -> DeviceInfo:
@@ -49,15 +59,65 @@ def _device_label(discovery: BluetoothServiceInfoBleak) -> str:
     return discovery.address
 
 
+def _height_to_feet_inches(height_cm: float) -> tuple[int, int]:
+    """Convert stored centimeters to whole feet and inches for the form."""
+    total_inches = round(height_cm / CM_PER_INCH)
+    return divmod(total_inches, INCHES_PER_FOOT)
+
+
+def _profile_input_to_storage(user_input: dict[str, Any]) -> dict[str, Any]:
+    """Convert form values to the metric profile used by scale protocols."""
+    profile = dict(user_input)
+    feet = int(profile.pop(CONF_HEIGHT_FEET))
+    inches = int(profile.pop(CONF_HEIGHT_INCHES))
+    height_cm = (feet * INCHES_PER_FOOT + inches) * CM_PER_INCH
+    if not 100 <= height_cm <= 250:
+        raise vol.Invalid("Height must be between 100 and 250 cm")
+    profile[CONF_HEIGHT] = round(height_cm, 1)
+    profile[CONF_AGE] = int(profile[CONF_AGE])
+    return profile
+
+
 def _profile_schema(defaults: dict[str, Any]) -> vol.Schema:
+    if CONF_HEIGHT_FEET in defaults and CONF_HEIGHT_INCHES in defaults:
+        feet = int(defaults[CONF_HEIGHT_FEET])
+        inches = int(defaults[CONF_HEIGHT_INCHES])
+    else:
+        feet, inches = _height_to_feet_inches(
+            float(defaults.get(CONF_HEIGHT, DEFAULT_HEIGHT))
+        )
     return vol.Schema(
         {
             vol.Required(
-                CONF_HEIGHT, default=defaults.get(CONF_HEIGHT, DEFAULT_HEIGHT)
-            ): vol.All(vol.Coerce(float), vol.Range(min=100, max=250)),
+                CONF_HEIGHT_FEET, default=feet
+            ): NumberSelector(
+                NumberSelectorConfig(
+                    min=3,
+                    max=8,
+                    step=1,
+                    mode=NumberSelectorMode.BOX,
+                )
+            ),
+            vol.Required(
+                CONF_HEIGHT_INCHES, default=inches
+            ): NumberSelector(
+                NumberSelectorConfig(
+                    min=0,
+                    max=11,
+                    step=1,
+                    mode=NumberSelectorMode.BOX,
+                )
+            ),
             vol.Required(
                 CONF_AGE, default=defaults.get(CONF_AGE, DEFAULT_AGE)
-            ): vol.All(vol.Coerce(int), vol.Range(min=10, max=120)),
+            ): NumberSelector(
+                NumberSelectorConfig(
+                    min=10,
+                    max=120,
+                    step=1,
+                    mode=NumberSelectorMode.BOX,
+                )
+            ),
             vol.Required(
                 CONF_GENDER,
                 default=defaults.get(CONF_GENDER, DEFAULT_GENDER),
@@ -172,12 +232,20 @@ class BleScaleConfigFlow(ConfigFlow, domain=DOMAIN):
     ) -> ConfigFlowResult:
         """Collect the profile used for scale setup and calculations."""
         if user_input is not None:
+            try:
+                profile = _profile_input_to_storage(user_input)
+            except vol.Invalid:
+                return self.async_show_form(
+                    step_id="profile",
+                    data_schema=_profile_schema(user_input),
+                    errors={"base": "invalid_height"},
+                )
             return self.async_create_entry(
                 title=self._title,
                 data={
                     CONF_ADDRESS: self._address,
                     CONF_ADAPTER: self._adapter_key,
-                    **user_input,
+                    **profile,
                 },
             )
         return self.async_show_form(
@@ -213,7 +281,15 @@ class BleScaleOptionsFlow(OptionsFlowWithReload):
     ) -> ConfigFlowResult:
         """Show and save profile options."""
         if user_input is not None:
-            return self.async_create_entry(title="", data=user_input)
+            try:
+                profile = _profile_input_to_storage(user_input)
+            except vol.Invalid:
+                return self.async_show_form(
+                    step_id="init",
+                    data_schema=_profile_schema(user_input),
+                    errors={"base": "invalid_height"},
+                )
+            return self.async_create_entry(title="", data=profile)
         defaults = {**self.config_entry.data, **self.config_entry.options}
         return self.async_show_form(
             step_id="init", data_schema=_profile_schema(defaults)

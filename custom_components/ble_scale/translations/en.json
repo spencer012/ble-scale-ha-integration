@@ -24,7 +24,8 @@
         "title": "User profile",
         "description": "These values are stored locally and used for scale setup and body-composition estimates.",
         "data": {
-          "height": "Height (cm)",
+          "height_feet": "Height (feet)",
+          "height_inches": "Height (inches)",
           "age": "Age",
           "gender": "Sex",
           "athlete": "Athlete mode"
@@ -33,6 +34,7 @@
     },
     "error": {
       "device_not_found": "The scale is not currently visible. Wake it and try again.",
+      "invalid_height": "Height must be between 3 ft 4 in and 8 ft 2 in.",
       "unsupported_device": "The selected device does not match a supported scale protocol."
     },
     "abort": {
@@ -48,12 +50,16 @@
         "title": "User profile",
         "description": "Update the profile used for scale setup and body-composition estimates.",
         "data": {
-          "height": "Height (cm)",
+          "height_feet": "Height (feet)",
+          "height_inches": "Height (inches)",
           "age": "Age",
           "gender": "Sex",
           "athlete": "Athlete mode"
         }
       }
+    },
+    "error": {
+      "invalid_height": "Height must be between 3 ft 4 in and 8 ft 2 in."
     }
   },
   "selector": {
