@@ -12,11 +12,13 @@ from typing import Any
 from bleak_retry_connector import (
     BLEAK_RETRY_EXCEPTIONS,
     BleakClientWithServiceCache,
+    close_stale_connections_by_address,
     establish_connection,
 )
 
 from homeassistant.components import bluetooth
 from homeassistant.components.bluetooth import (
+    BluetoothCallbackReplay,
     BluetoothChange,
     BluetoothScanningMode,
     BluetoothServiceInfoBleak,
@@ -84,6 +86,7 @@ class BleScaleCoordinator(DataUpdateCoordinator[ScaleMeasurement]):
         self._cancel_bluetooth_callback: Any = None
         self._connect_task: asyncio.Task[None] | None = None
         self._cooldown_until = 0.0
+        self._stale_connections_closed = False
 
     async def async_start(self) -> None:
         """Start listening for advertisements from this scale."""
@@ -91,7 +94,8 @@ class BleScaleCoordinator(DataUpdateCoordinator[ScaleMeasurement]):
             self.hass,
             self._async_advertisement,
             {"address": self.address, "connectable": True},
-            BluetoothScanningMode.ACTIVE,
+            BluetoothScanningMode.PASSIVE,
+            replay=BluetoothCallbackReplay.DISABLED,
         )
 
     async def async_shutdown(self) -> None:
@@ -122,7 +126,6 @@ class BleScaleCoordinator(DataUpdateCoordinator[ScaleMeasurement]):
 
     async def _async_collect_measurement(self) -> None:
         """Run one connect, initialize, notify, and disconnect session."""
-        succeeded = False
         client: BleakClientWithServiceCache | None = None
         unlock_task: asyncio.Task[None] | None = None
         hold_handle: asyncio.TimerHandle | None = None
@@ -156,6 +159,10 @@ class BleScaleCoordinator(DataUpdateCoordinator[ScaleMeasurement]):
                 )
 
         try:
+            if not self._stale_connections_closed:
+                await close_stale_connections_by_address(self.address)
+                self._stale_connections_closed = True
+
             ble_device = bluetooth.async_ble_device_from_address(
                 self.hass, self.address, connectable=True
             )
@@ -200,7 +207,6 @@ class BleScaleCoordinator(DataUpdateCoordinator[ScaleMeasurement]):
                 measured_at=datetime.now(UTC),
             )
             self.async_set_updated_data(measurement)
-            succeeded = True
         except TimeoutError:
             _LOGGER.debug("Timed out reading BLE scale %s", self.address)
         except BLEAK_RETRY_EXCEPTIONS:
@@ -219,9 +225,7 @@ class BleScaleCoordinator(DataUpdateCoordinator[ScaleMeasurement]):
             if client is not None and client.is_connected:
                 with suppress(*BLEAK_RETRY_EXCEPTIONS):
                     await client.disconnect()
-            self._cooldown_until = monotonic() + (
-                RECONNECT_COOLDOWN if succeeded else 5.0
-            )
+            self._cooldown_until = monotonic() + RECONNECT_COOLDOWN
             self._connect_task = None
 
     async def _periodic_unlock(
